@@ -1,0 +1,18 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Node / Next.js
+node_modules/
+.next/
+next-env.d.ts
+
+# Secrets
+.env
+.env.*
+
+# Editors
+.vscode/
+.idea/
+*.tsbuildinfo
