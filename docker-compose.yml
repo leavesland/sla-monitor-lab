@@ -1,0 +1,61 @@
+# Five containers. Run them all with:   docker compose up --build
+# Run three workers instead of one:      docker compose up --build --scale worker=3
+#
+# Every service can reach every other by its name. "redis" below is a
+# hostname inside this network, which is why REDIS_URL says redis://redis:6379.
+
+services:
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes     # write to disk, so data survives restarts
+    volumes:
+      - redis-data:/data
+    healthcheck:                               # "is Redis actually ready?" not just "did it start?"
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  api:
+    build: ./backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"                            # reachable from your machine for /docs
+    depends_on:
+      redis:
+        condition: service_healthy             # wait for the healthcheck above
+
+  scheduler:
+    build: ./backend
+    command: python -m app.scheduler
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    restart: unless-stopped                    # if it crashes, bring it back
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: ./backend
+    command: python -m app.worker
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    environment:
+      API_URL: http://api:8000                 # the Next.js server forwards /api/* here
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  redis-data:
