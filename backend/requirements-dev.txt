@@ -1,0 +1,4 @@
+# Everything the app needs, plus the tools for running tests.
+-r requirements.txt
+pytest==9.2.0
+fakeredis==2.40.0

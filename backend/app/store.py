@@ -21,7 +21,10 @@ import redis
 from .config import KEEP_LAST, QUEUE_KEY, REDIS_URL
 
 # decode_responses=True means we get Python strings back instead of bytes.
-r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+# socket_timeout must be longer than the 5-second wait in dequeue(). The
+# library's default is also 5 seconds, so an empty queue used to crash the
+# worker with a TimeoutError (Docker restarted it, which hid the bug).
+r = redis.Redis.from_url(REDIS_URL, decode_responses=True, socket_timeout=10)
 
 
 def now() -> str:
@@ -65,8 +68,12 @@ def queue_length() -> int:
 
 # --- results and incidents ----------------------------------------------
 
-def record_result(name: str, ok: bool, status: int | None, latency_ms: int) -> None:
-    """Save one check and update incident state."""
+def record_result(name: str, ok: bool, status: int | None, latency_ms: int) -> str | None:
+    """Save one check and update incident state.
+
+    Returns "opened" when an incident starts, "closed" when one ends, and
+    None otherwise. The worker uses this to decide when to send an alert.
+    """
     r.lpush(f"history:{name}", json.dumps({
         "at": now(), "ok": ok, "status": status, "latency_ms": latency_ms,
     }))
@@ -74,10 +81,12 @@ def record_result(name: str, ok: bool, status: int | None, latency_ms: int) -> N
 
     previous = r.get(f"state:{name}")                # None on the very first check
     current = "up" if ok else "down"
+    event = None
 
     if current == "down" and previous != "down":
         # Just went down (or has been down since the first check): open an incident.
         r.set(f"open:{name}", now())
+        event = "opened"
     elif current == "up" and previous == "down":
         # Just recovered: close the open incident and file it.
         started = r.get(f"open:{name}")
@@ -85,8 +94,10 @@ def record_result(name: str, ok: bool, status: int | None, latency_ms: int) -> N
             r.lpush("incidents", json.dumps({"target": name, "started": started, "ended": now()}))
             r.ltrim("incidents", 0, 99)
         r.delete(f"open:{name}")
+        event = "closed"
 
     r.set(f"state:{name}", current)
+    return event
 
 
 def get_history(name: str) -> list[dict]:

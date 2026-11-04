@@ -12,7 +12,7 @@ import time
 
 import httpx
 
-from . import store
+from . import alerts, store
 from .config import RETRIES, TIMEOUT_SECONDS
 
 # Docker sets HOSTNAME to the container id, so each worker gets a distinct label.
@@ -36,20 +36,30 @@ def check(url: str) -> tuple[bool, int | None, int]:
     return ok, status, latency_ms
 
 
+def handle(name: str) -> None:
+    """Check one target, record the result, and alert if its state changed."""
+    url = store.get_targets().get(name)
+    if url is None:
+        return                                   # target was removed after being queued
+
+    ok, status, latency_ms = check(url)
+    event = store.record_result(name, ok, status, latency_ms)
+
+    if event == "opened":
+        alerts.send_alert(f"🔴 {name} is DOWN ({url}), status={status}")
+    elif event == "closed":
+        alerts.send_alert(f"🟢 {name} is back UP ({url}), {latency_ms} ms")
+
+    print(f"worker {WORKER_ID}: {name:14} {'UP  ' if ok else 'DOWN'}  status={status}  {latency_ms} ms", flush=True)
+
+
 def main() -> None:
     print(f"worker {WORKER_ID}: started", flush=True)
     while True:
         name = store.dequeue(timeout=5)
         if name is None:
             continue                                 # queue was empty; go back to waiting
-
-        url = store.get_targets().get(name)
-        if url is None:
-            continue                                 # target was removed after being queued
-
-        ok, status, latency_ms = check(url)
-        store.record_result(name, ok, status, latency_ms)
-        print(f"worker {WORKER_ID}: {name:14} {'UP  ' if ok else 'DOWN'}  status={status}  {latency_ms} ms", flush=True)
+        handle(name)
 
 
 if __name__ == "__main__":
